@@ -83,7 +83,23 @@ const API = {
       body: JSON.stringify(payload)
     }));
   },
-  comparisonCsvUrl(id) { return `/api/comparisons/${id}/csv`; }
+  comparisonCsvUrl(id) { return `/api/comparisons/${id}/csv`; },
+
+  // ---------- 细胞迁移（已发布报告 → 图片草稿，三点仿射） ----------
+  async transferPreview(payload) {
+    return jsonOrThrow(await fetch('/api/transfers/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }));
+  },
+  async transferCommit(payload) {
+    return jsonOrThrow(await fetch('/api/transfers/commit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }));
+  }
 };
 
 window.API = API;

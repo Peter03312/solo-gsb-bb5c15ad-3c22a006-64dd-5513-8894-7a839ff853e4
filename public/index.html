@@ -100,6 +100,14 @@
           <p class="hint">发布会冻结当时的图片、标尺、细胞轮廓、<b>取样视野与密度统计</b>；之后修改草稿不影响已发布报告。</p>
           <button id="publish-btn" class="primary wide">发布当前草稿为报告</button>
         </div>
+
+        <div class="panel">
+          <h3>⑦ 从已发布报告迁移细胞（三点仿射）</h3>
+          <p class="hint">选一份<b>已发布报告</b>作来源、本图作目标，在两张原图上各标记
+            <b>顺序对应的三个非共线点</b>，预览来源全部细胞外轮廓及孔洞映射到本图后的图形与逐个校验结果，
+            确认后追加到本图现有细胞（保留名称、按本图标尺重算测量）。来源报告与本图原有数据均不改变。</p>
+          <button id="open-transfer" class="wide">📥 打开细胞迁移（本图为目标）</button>
+        </div>
       </aside>
 
       <main class="canvas-wrap">
@@ -212,10 +220,68 @@
     </div>
   </section>
 
+  <!-- 细胞迁移：已发布报告 → 图片草稿（三点仿射预览/提交） -->
+  <section id="view-transfer" class="view hidden transfer-view">
+    <div class="card">
+      <div class="cmp-head">
+        <a id="tr-back" href="#/" class="back">← 返回</a>
+        <span id="tr-version" class="version-tag">目标草稿未加载</span>
+      </div>
+      <h2>细胞迁移：已发布报告 → 图片草稿（仿射）</h2>
+
+      <div class="cmp-pick-row">
+        <label>来源（已发布报告）
+          <select id="tr-source-report"></select>
+        </label>
+        <button id="tr-load" class="small">载入来源与目标原图</button>
+      </div>
+      <p class="hint">在<b>两张原图</b>上依次点击，各放置 <b>1、2、3</b> 个<b>顺序对应</b>的标记点
+        （三点不得重合、不得共线、必须在各自图片范围内）。放置完成后点「预览映射」；
+        预览与提交使用<b>同一变换及校验</b>，任一细胞映射后不满足几何规则都会被禁止提交，任何失败整批不写入。</p>
+
+      <div id="tr-error" class="cmp-error hidden"></div>
+
+      <div class="tr-panes">
+        <div class="tr-pane">
+          <div class="tr-pane-head">
+            <b>来源原图（已发布报告）</b>
+            <span id="tr-src-info" class="muted"></span>
+          </div>
+          <div class="tr-canvas-box"><canvas id="tr-canvas-src"></canvas></div>
+          <div class="toolbar wrap">
+            <button id="tr-src-undo" class="small">撤销来源点</button>
+            <button id="tr-src-clear" class="small">清空来源点</button>
+            <span id="tr-src-count" class="muted">0 / 3</span>
+          </div>
+        </div>
+        <div class="tr-pane">
+          <div class="tr-pane-head">
+            <b>目标原图（当前草稿）</b>
+            <span id="tr-dst-info" class="muted"></span>
+          </div>
+          <div class="tr-canvas-box"><canvas id="tr-canvas-dst"></canvas></div>
+          <div class="toolbar wrap">
+            <button id="tr-dst-undo" class="small">撤销目标点</button>
+            <button id="tr-dst-clear" class="small">清空目标点</button>
+            <span id="tr-dst-count" class="muted">0 / 3</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="toolbar wrap">
+        <button id="tr-preview" class="primary small">预览映射与逐个校验</button>
+        <button id="tr-commit" class="primary small" disabled>确认迁移（追加到目标现有细胞）</button>
+        <span id="tr-summary" class="muted"></span>
+      </div>
+      <div id="tr-results" class="table-scroll"></div>
+    </div>
+  </section>
+
   <script src="/geometry-client.js"></script>
   <script src="/api.js"></script>
   <script src="/canvas-view.js"></script>
   <script src="/editor.js"></script>
+  <script src="/transfer.js"></script>
   <script src="/reports.js"></script>
   <script src="/compare.js"></script>
   <script src="/app.js"></script>

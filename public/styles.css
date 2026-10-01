@@ -218,3 +218,22 @@ table.cmp-table td.num { text-align: right; }
 @media (max-width: 720px) {
   .cmp-pools { grid-template-columns: 1fr; }
 }
+
+/* 细胞迁移（双图画布） */
+.transfer-view { max-width: none; }
+.tr-panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 12px 0; }
+.tr-pane { border: 1px dashed var(--line); border-radius: 8px; padding: 10px; background: rgba(255,255,255,.015); }
+.tr-pane-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.tr-pane-head .muted { font-size: 11.5px; }
+.tr-canvas-box {
+  position: relative; width: 100%; height: 460px; overflow: hidden;
+  background: repeating-conic-gradient(#0c1315 0 25%, #111a1d 0 50%) 0 0 / 24px 24px;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.tr-canvas-box canvas { cursor: crosshair; }
+#tr-results table { font-size: 11.5px; }
+#tr-results td.ok, #tr-results span.ok { color: var(--accent); }
+#tr-results td.bad, #tr-results span.bad { color: var(--danger); }
+@media (max-width: 900px) {
+  .tr-panes { grid-template-columns: 1fr; }
+}

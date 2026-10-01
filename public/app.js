@@ -4,7 +4,7 @@
 
 const App = {
   views: ['view-home', 'view-editor', 'view-reports', 'view-report-detail',
-          'view-comparisons', 'view-compare-editor'],
+          'view-comparisons', 'view-compare-editor', 'view-transfer'],
 
   show(id) {
     for (const v of this.views) document.getElementById(v).classList.toggle('hidden', v !== id);
@@ -100,6 +100,15 @@ const App = {
         alert(e.message);
         location.hash = '#/comparisons';
       }
+    } else if (page === 'transfer') {
+      this.show('view-transfer');
+      window.scrollTo(0, 0);
+      try {
+        await Transfer.open(parts[1] || null);
+      } catch (e) {
+        alert(e.message);
+        location.hash = '#/';
+      }
     } else if (page === 'comparisons') {
       this.show('view-comparisons');
       window.scrollTo(0, 0);
@@ -118,6 +127,7 @@ const App = {
 
   init() {
     Editor.bindUI();
+    Transfer.bindUI();
 
     document.getElementById('cmp-load').onclick = () => Compare.loadPickedReports();
     document.getElementById('cmp-save').onclick = () => Compare.save();

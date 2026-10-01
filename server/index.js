@@ -11,6 +11,7 @@ const { initDb } = require('./db');
 const geo = require('./geometry');
 const cmp = require('./compare');
 const fieldsSvc = require('./fields');
+const transfer = require('./transfer');
 const { renderAnnotatedPng } = require('./render');
 const { buildReportCsv, buildCombinedCsv, buildComparisonCsv, buildFieldStatsCsv, streamZip } = require('./exporter');
 
@@ -328,6 +329,134 @@ app.post('/api/images/:id/publish', (req, res) => {
   res.status(201).json({
     report: hydrateReport(db.prepare('SELECT * FROM reports WHERE id = ?').get(reportId)),
     image: getImageOr404(img.id)
+  });
+});
+
+// ---------- 细胞迁移（已发布报告 → 图片草稿，三点仿射；预览与提交同一变换及校验） ----------
+
+// 组装迁移请求：校验来源报告与目标草稿存在、来源有细胞、两组三点合法、
+// 映射后全部轮廓通过既有几何规则。任一失败抛出 Error（message 已可直接展示）。
+// 返回 { report, img, plan }；不做任何写入。
+function resolveTransferPlan(body) {
+  const reportId = body && body.sourceReportId;
+  const targetId = body && body.targetImageId;
+  if (typeof reportId !== 'string' || !reportId) {
+    throw Object.assign(new Error('请选择一份已发布报告作为来源 sourceReportId'), { status: 400 });
+  }
+  if (typeof targetId !== 'string' || !targetId) {
+    throw Object.assign(new Error('请选择一张图片草稿作为目标 targetImageId'), { status: 400 });
+  }
+  const report = getReportOr404(reportId);
+  if (!report) throw Object.assign(new Error(`来源报告 ${reportId} 不存在`), { status: 404 });
+  const img = getImageOr404(targetId);
+  if (!img) throw Object.assign(new Error(`目标图片草稿 ${targetId} 不存在`), { status: 404 });
+  if (!report.cells.length) {
+    throw Object.assign(new Error(`来源报告「${report.title}」中没有任何细胞，无法迁移`), { status: 400 });
+  }
+
+  // planTransfer 内部解析/校验两组三点并逐细胞复算几何规则；点重合、共线、越界、
+  // 映射后轮廓不合法都会在此抛出，整个请求不会写入任何数据。
+  const plan = transfer.planTransfer(
+    report, img, body.sourcePoints, body.targetPoints,
+    img.calib ? img.calib.scale : null
+  );
+  if (!plan.valid) {
+    throw Object.assign(
+      new Error(`映射校验未通过，禁止迁移（整批不写入）：${plan.errors.join('；')}`),
+      { status: 400, plan }
+    );
+  }
+  return { report, img, plan };
+}
+
+// 预览：返回映射图形（轮廓点）与逐个细胞校验结果，不改变任何数据
+app.post('/api/transfers/preview', (req, res) => {
+  let resolved;
+  try {
+    resolved = resolveTransferPlan(req.body || {});
+  } catch (e) {
+    const status = e.status || 400;
+    return res.status(status).json({
+      error: e.message,
+      // 点/轮廓校验失败时仍带回逐细胞结果，便于页面展示每个细胞的失败原因
+      ...(e.plan ? { plan: e.plan } : {})
+    });
+  }
+  const { plan, img } = resolved;
+  res.json({
+    ok: true,
+    targetVersion: img.version, // 提交时必须原样带回
+    plan
+  });
+});
+
+// 提交：必须携带预览时读取的目标草稿版本；版本过期 → 409，整批不写入。
+// 成功后映射细胞【追加】到目标现有细胞：生成不冲突的新标识、保留名称、
+// 按目标标尺重算测量；视野统计随水合结果自动重算。
+app.post('/api/transfers/commit', (req, res) => {
+  const body = req.body || {};
+
+  const targetId = body.targetImageId;
+  if (typeof targetId !== 'string' || !targetId) {
+    return badRequest(res, '请选择目标图片草稿 targetImageId');
+  }
+  const img0 = getImageOr404(targetId);
+  if (!img0) return res.status(404).json({ error: `目标图片草稿 ${targetId} 不存在` });
+  if (!Number.isInteger(body.version)) {
+    return badRequest(res, '确认迁移必须携带预览时读取的目标草稿版本号 version');
+  }
+  if (body.version !== img0.version) {
+    return res.status(409).json({
+      error: `迁移被拒绝：目标草稿已过期（携带版本 v${body.version}，当前版本 v${img0.version}）。请刷新预览、重新确认后再提交`,
+      currentVersion: img0.version
+    });
+  }
+
+  // 用与预览完全相同的输入重算同一变换与校验（任何失败整批不写入）
+  let resolved;
+  try {
+    resolved = resolveTransferPlan(body);
+  } catch (e) {
+    const status = e.status || 400;
+    return res.status(status).json({
+      error: e.message,
+      ...(e.plan ? { plan: e.plan } : {})
+    });
+  }
+  const { plan } = resolved;
+
+  // 生成不与目标现有细胞（及本批新细胞）冲突的新标识；名称保留来源名称
+  const usedIds = new Set(img0.cells.map((c) => c.id).filter(Boolean));
+  const newCells = plan.cells.map((r) => {
+    let id = crypto.randomUUID();
+    while (usedIds.has(id)) id = crypto.randomUUID();
+    usedIds.add(id);
+    return {
+      id,
+      name: r.name,
+      outer: r.outer,
+      holes: r.holes,
+      areaUm2: r.areaUm2,       // 已按目标标尺计算；目标未定标则为 null
+      perimeterUm: r.perimeterUm
+    };
+  });
+
+  const merged = img0.cells.concat(newCells);
+
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE images SET cells = ?, version = version + 1,
+                updated_at = datetime('now') WHERE id = ? AND version = ?`)
+      .run(JSON.stringify(merged), img0.id, img0.version);
+  });
+  tx();
+
+  const updated = getImageOr404(img0.id);
+  res.status(201).json({
+    ok: true,
+    addedCount: newCells.length,
+    // 仅返回本次追加细胞的服务端视图（含新标识与按目标标尺重算的测量）
+    addedCells: updated.cells.slice(updated.cells.length - newCells.length),
+    image: updated // 追加后的整份目标草稿（含实时重算的 fieldStats）
   });
 });
 

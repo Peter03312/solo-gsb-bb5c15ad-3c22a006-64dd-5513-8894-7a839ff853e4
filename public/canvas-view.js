@@ -238,6 +238,9 @@ class CanvasView {
     const calib = st.calibDraft || (st.calib ? [st.calib.p1, st.calib.p2] : null);
     if (calib && calib.length) this.drawCalib(ctx, calib);
 
+    // 外部覆盖层（仍处于图像坐标变换中）：迁移页用于画三点标记与映射预览
+    if (this.cb.afterRender) this.cb.afterRender(ctx, this);
+
     this.cb.onZoom && this.cb.onZoom(this.k);
   }
 

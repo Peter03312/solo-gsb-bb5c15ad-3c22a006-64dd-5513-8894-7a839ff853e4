@@ -648,6 +648,9 @@ const Editor = {
     document.getElementById('save-contours').onclick = () => this.saveAll();
     document.getElementById('save-fields').onclick = () => this.saveFields();
     document.getElementById('publish-btn').onclick = () => this.publish();
+    document.getElementById('open-transfer').onclick = () => {
+      location.hash = `#/transfer/${this.imageId}`;
+    };
   }
 };
 
