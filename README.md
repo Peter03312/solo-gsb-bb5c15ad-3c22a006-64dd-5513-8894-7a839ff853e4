@@ -4,7 +4,8 @@
 自动计算**扣除孔洞后的净面积（μm²）**与**含孔洞边界的总周长（μm）**；
 还可圈定多个**命名取样视野**（外环 + 可选孔洞），按细胞净区域质心统计各视野的
 **细胞数、净面积（mm²）与每 mm² 细胞密度**；
-并可发布为不可变报告、导出**标注 PNG**、**测量 CSV** 与**视野统计 CSV**。
+可发布为不可变报告、导出**标注 PNG**、**测量 CSV** 与**视野统计 CSV**；
+并支持把一份已发布报告的全部细胞经**三点对应仿射变换**整体迁移到另一张切片草稿。
 
 - 技术栈：Node.js（Express）+ SQLite（better-sqlite3）+ 原生 Canvas 前端
 - 图片与数据**全部本地保存**（无任何外部服务依赖）：
@@ -64,13 +65,25 @@
    - 可导出与页面分区、数值完全一致的**比较 CSV**（UTF-8 BOM）。
    - 比较记录保存后即与草稿、后续发布解耦：**草稿后续改动或另发新报告都不改变已存比较**；
      比较记录创建时选定的两份报告不可更换。
+10. **细胞迁移（三点对应仿射变换）**：在切片编辑页选择一份**已发布报告**作来源，
+    在来源快照与当前草稿大图上按**相同顺序各标记 3 个不共线对应点**，
+    把来源全部细胞的外轮廓与孔洞经仿射变换映射到当前草稿。
+    - **预览先行**：服务端按同一变换映射全部细胞并**逐个套用与「保存轮廓」相同的几何校验**
+      （越界/自交/孔洞不严格在外轮廓内/孔洞互触），页面在大图上以虚线叠加映射结果并列出
+      每个细胞的校验结论；**任一细胞不合法即禁止提交**；
+    - 对应点**重合、共线、坐标越界**（任一侧）都会被拒绝并指出具体原因；
+      **来源无细胞、来源报告或目标草稿不存在**时明确报错；
+    - **确认迁移必须携带预览时读取的目标草稿版本**；期间草稿被改动（版本过期）时
+      拒绝写入（HTTP 409）并提示刷新，页面自动拉取最新草稿，需重新预览；
+    - 成功后映射细胞**追加**到目标现有细胞之后：生成**不冲突的新标识**、**保留来源名称**、
+      按**目标标尺**重算测量值，取样视野统计随细胞变动自动重算；
+    - **来源报告、目标原有细胞与标尺、全部已发布报告均不改变**；
+      预览与提交使用同一变换与校验，任何失败**整批不写入**。
 
 ## 配置项
 
-本轮（取样视野细胞密度）**未引入新的环境变量或新的外部依赖**，沿用既有配置；
-视野数据保存在同一个 SQLite 数据库：`images.fields`（草稿）与 `reports.fields`（发布冻结）。
-启动时自动建表；**旧版本数据库会在启动时幂等补列**（`ALTER TABLE ... ADD COLUMN`），
-**旧报告缺少视野列时按空列表读取**，无需手动迁移。
+本轮（细胞迁移）**未引入新的环境变量、外部依赖或数据库表结构变更**（迁移只向草稿的
+`cells` JSON 追加细胞），沿用既有配置；旧数据库无需任何迁移即可直接使用。
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -136,7 +149,17 @@ npm start
    未定标时面积/密度显示「待定标」，细胞数仍可查看；
 9. 点击 **发布当前草稿为报告**，在「已发布报告」中查看冻结快照，
    报告页展示与「视野统计 CSV」完全一致的冻结视野统计，并可导出 PNG / 测量 CSV / 视野统计 CSV；
-10. 需要对比两份报告时，进入 **报告比较**（流程不变，比较仍只读取冻结的细胞测量值）。
+10. 需要对比两份报告时，进入 **报告比较**（流程不变，比较仍只读取冻结的细胞测量值）；
+11. 需要把已发布报告的细胞搬到另一张切片时，在目标切片的编辑页打开 **⑥ 细胞迁移**：
+    - 在下拉框选择**来源报告**（已发布），左侧出现来源快照；
+    - 在来源快照上**依次单击 3 个对应点**（编号 1–3，自动连线提示顺序）；
+    - 点 **🎯 标目标点工具**，在右侧大图上按**相同顺序**单击 3 个对应点
+      （点错可「清除全部对应点」重标）；
+    - 点 **预览迁移**：大图上以青色虚线叠加全部映射细胞（不合法细胞为红色），
+      面板逐个列出校验结论；**任一细胞不合法或对应点重合/共线/越界都无法提交**；
+    - 预览全部通过后点 **确认迁移**（携带预览时读取的草稿版本；若期间草稿被改动，
+      会提示版本过期并自动刷新，需重新预览）；成功后映射细胞追加到细胞列表末尾，
+      测量表与视野统计立即按当前标尺重算，可照常继续编辑、保存或发布。
 
 ## 目录结构
 
@@ -146,17 +169,19 @@ npm start
 ├── docker-compose.yml
 ├── package.json
 ├── server/
-│   ├── index.js       # Express API：上传/定标/轮廓/视野/发布/导出/报告比较
+│   ├── index.js       # Express API：上传/定标/轮廓/视野/发布/导出/报告比较/细胞迁移
 │   ├── db.js          # SQLite 表结构与初始化（启动自动建表 + 旧库幂等补 fields 列）
 │   ├── geometry.js    # 几何校验、面积/周长、净区域质心（服务端最终校验）
 │   ├── fields.js      # 取样视野：质心归属、mm²/密度统计、未定标“待定标”
 │   ├── compare.js     # 报告比较：手动一对一配对校验、冻结值差值/变化率视图
+│   ├── transfer.js    # 细胞迁移：三点对应点校验、仿射求解、整批映射+逐细胞校验
 │   ├── render.js      # sharp + SVG 渲染标注 PNG
 │   └── exporter.js    # CSV（测量/汇总/视野统计/比较）与 ZIP 导出
 ├── public/            # 前端（原生 JS，无需构建）
 ├── test-geometry.js   # 几何自测（npm test）
 ├── test-fields.js     # 视野密度统计自测（npm test）
 ├── test-compare.js    # 报告比较自测（npm test）
+├── test-transfer.js   # 细胞迁移自测（npm test）
 └── data/              # 运行后生成：app.db、images/、snapshots/
 ```
 
@@ -277,6 +302,115 @@ curl -s -OJ http://localhost:8080/api/reports/$REPORT_ID/field-csv
 原 `GET /api/reports/:id/csv`（测量 CSV，μm²）、`/png`、批量导出与报告比较结果
 **保持原义不变**；视野统计是独立 CSV，不混入测量 CSV。
 
+## 细胞迁移 HTTP 接口（三点对应仿射变换）
+
+把一份**已发布报告**的全部细胞映射到**另一张图片草稿**。
+`sourcePoints` / `targetPoints` 各为按相同顺序给出的 **3 个不共线对应点**
+（图片原始像素坐标 `{x, y}`；服务端按 3 位小数取整后求解，预览与提交因此是同一变换）。
+预览与确认提交共用同一套映射与几何校验；任何失败**整批不写入**。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/images/:id/migrate/preview` | 预览：`{reportId, sourcePoints, targetPoints}` → 仿射系数、逐细胞映射轮廓与校验结论、按目标标尺预算的测量值、预览时读取的目标草稿版本；不写入任何数据 |
+| `POST /api/images/:id/migrate` | 确认迁移：`{version, reportId, sourcePoints, targetPoints}`，`version` 必须为**预览时读取的目标草稿版本**；全部校验通过才把映射细胞追加到目标（新标识、保留名称、按目标标尺重算测量），返回更新后的整份草稿 |
+
+错误语义：
+
+- 目标草稿不存在 → **404**；来源报告不存在 → **404**；缺少 `reportId` → **400**；
+- 来源报告无细胞 → **400**（指明报告标题）；
+- 对应点数量不足/坐标非法/**重合/共线/越界**（任一侧）→ **400**，指明侧别与具体点；
+- 映射后任一细胞不满足几何规则 → 预览 `ok:false` 并逐细胞给出原因；
+  提交时同样拒绝（**400**，**整批不写入**，目标版本不变）；
+- 携带的 `version` 过期 → **409** `{error, currentVersion}`，提示刷新后重新预览；
+- 成功（**201**）：目标 `version + 1`，映射细胞追加到现有细胞之后，
+  目标原有细胞/标尺/视野、来源报告与全部已发布报告均不改变。
+
+预览响应示例（节选）：
+
+```json
+{
+  "target": { "id": "img-B", "version": 4, "width": 400, "height": 300 },
+  "source": { "reportId": "rep-A", "title": "切片A报告", "cellCount": 2 },
+  "transform": { "a": 1.5, "b": 0, "c": 50, "d": 0, "e": 1.5, "f": 50 },
+  "ok": true, "okCount": 2, "failCount": 0,
+  "cells": [
+    { "key": "cell-a", "name": "Alpha", "seq": 1, "ok": true, "error": null,
+      "outer": [{"x":65,"y":65},{"x":140,"y":65},{"x":140,"y":125},{"x":65,"y":125}],
+      "holes": [[{"x":80,"y":80},{"x":95,"y":80},{"x":95,"y":95},{"x":80,"y":95}]],
+      "areaUm2": 267.1875, "perimeterUm": 82.5 }
+  ]
+}
+```
+
+curl 示例（目标草稿 `IMG`、来源报告 `RID`）：
+
+```bash
+# 1) 预览：来源三点 (0,0)(100,0)(0,100) ↔ 目标三点 (50,50)(200,50)(50,200)
+curl -s -X POST http://localhost:8080/api/images/$IMG/migrate/preview \
+  -H 'Content-Type: application/json' \
+  -d "{\"reportId\":\"$RID\",
+       \"sourcePoints\":[{\"x\":0,\"y\":0},{\"x\":100,\"y\":0},{\"x\":0,\"y\":100}],
+       \"targetPoints\":[{\"x\":50,\"y\":50},{\"x\":200,\"y\":50},{\"x\":50,\"y\":200}]}" \
+  | jq '{ok, failCount, targetVersion: .target.version,
+         cells: [.cells[] | {name, ok, error}]}'
+
+# 2) 确认迁移：version 必须取上一步预览返回的 target.version
+curl -s -X POST http://localhost:8080/api/images/$IMG/migrate \
+  -H 'Content-Type: application/json' \
+  -d "{\"version\":4,\"reportId\":\"$RID\",
+       \"sourcePoints\":[{\"x\":0,\"y\":0},{\"x\":100,\"y\":0},{\"x\":0,\"y\":100}],
+       \"targetPoints\":[{\"x\":50,\"y\":50},{\"x\":200,\"y\":50},{\"x\":50,\"y\":200}]}" \
+  | jq '{appendedCount, newVersion: .image.version,
+         cells: [.image.cells[] | {id, name, areaUm2}]}'
+```
+
+Node.js 示例（无第三方依赖；含 409 刷新重试）：
+
+```js
+const base = 'http://localhost:8080';
+
+async function migrateCells(targetImageId, reportId, sourcePoints, targetPoints) {
+  const post = (path, body) => fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }).then(async (r) => {
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) { const e = new Error(b.error || `HTTP ${r.status}`); e.status = r.status; e.body = b; throw e; }
+    return b;
+  });
+
+  // 预览：同一变换与校验，不写入
+  const preview = await post(`/api/images/${targetImageId}/migrate/preview`,
+    { reportId, sourcePoints, targetPoints });
+  if (!preview.ok) {
+    const bad = preview.cells.filter((c) => !c.ok).map((c) => `${c.label}：${c.error}`);
+    throw new Error(`预览未通过，禁止提交：\n${bad.join('\n')}`);
+  }
+
+  try {
+    // 确认：携带预览时读取的目标草稿版本
+    return await post(`/api/images/${targetImageId}/migrate`,
+      { version: preview.target.version, reportId, sourcePoints, targetPoints });
+  } catch (e) {
+    if (e.status === 409) {
+      throw new Error(`目标草稿已过期（当前 v${e.body.currentVersion}），请刷新后重新预览再迁移`);
+    }
+    throw e; // 400：对应点非法 / 来源无细胞 / 映射后轮廓不合法，整批未写入
+  }
+}
+
+const result = await migrateCells(
+  process.env.IMG, process.env.RID,
+  [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 0, y: 100 }],
+  [{ x: 50, y: 50 }, { x: 200, y: 50 }, { x: 50, y: 200 }]
+);
+console.log(`已迁移 ${result.appendedCount} 个细胞，目标草稿版本 v${result.image.version}`);
+for (const s of result.image.fieldStats) {
+  console.log(`${s.name}: 细胞 ${s.cellCount}，密度 ${s.densityText} 个/mm²`);
+}
+```
+
 ## 报告比较 HTTP 接口
 
 | 方法与路径 | 说明 |
@@ -298,6 +432,8 @@ curl -s -OJ http://localhost:8080/api/reports/$REPORT_ID/field-csv
 | `PUT /api/images/:id/contours` | 整批保存细胞轮廓（带 `version`；非法 400 整批不生效；过期 409） |
 | **`PUT /api/images/:id/fields`** | **整批保存取样视野（带 `version`；非法 400 整批不生效；过期 409）** |
 | `POST /api/images/:id/publish` | 发布冻结（含视野与统计；带 `version`，过期 409） |
+| **`POST /api/images/:id/migrate/preview`** | **迁移预览：三点对应仿射映射 + 逐细胞校验（不写入；返回预览时目标草稿版本）** |
+| **`POST /api/images/:id/migrate`** | **确认迁移（带预览时版本，过期 409；任一校验失败 400 整批不写入）** |
 | `GET /api/reports` / `GET /api/reports/:id` | 报告列表 / 冻结详情（旧报告 `fields` 为空列表） |
 | `GET /api/reports/:id/file` / `/png` | 发布时图片快照 / 标注 PNG |
 | `GET /api/reports/:id/csv` | 测量 CSV（μm²，原义不变） |

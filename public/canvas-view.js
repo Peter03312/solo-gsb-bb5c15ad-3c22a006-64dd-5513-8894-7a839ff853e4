@@ -137,6 +137,10 @@ class CanvasView {
       this.cb.onCalibPoint && this.cb.onCalibPoint(pt);
       return;
     }
+    if (this.tool === 'migrate') {
+      this.cb.onMigratePoint && this.cb.onMigratePoint(pt);
+      return;
+    }
     if (this.tool === 'cell' || this.tool === 'hole' || this.tool === 'field' || this.tool === 'fieldhole') {
       const st = this.getState();
       const ring = st.drawing;
@@ -238,7 +242,66 @@ class CanvasView {
     const calib = st.calibDraft || (st.calib ? [st.calib.p1, st.calib.p2] : null);
     if (calib && calib.length) this.drawCalib(ctx, calib);
 
+    // 细胞迁移：目标对应点（编号）与预览轮廓（虚线；不合法细胞为红色）
+    const anchors = st.migrationTargetPoints || [];
+    if (anchors.length) this.drawAnchors(ctx, anchors, '#ff9f1c');
+    const migCells = st.migrationPreview || [];
+    migCells.forEach((cell, i) => {
+      const color = cell.ok ? '#00e5ff' : '#ff1744';
+      this.drawPolygon(ctx, cell.outer, {
+        stroke: color, dash: [9 / this.k, 6 / this.k], width: 2.4 / this.k, fill: null
+      });
+      (cell.holes || []).forEach((h) => this.drawPolygon(ctx, h, {
+        stroke: color, dash: [5 / this.k, 4 / this.k], width: 1.6 / this.k, fill: null
+      }));
+      // 细胞序号标签：外轮廓顶点平均位置
+      if (cell.outer && cell.outer.length) {
+        let ax = 0, ay = 0;
+        for (const p of cell.outer) { ax += p.x; ay += p.y; }
+        ax /= cell.outer.length; ay /= cell.outer.length;
+        const fs = 12 / this.k;
+        ctx.font = `bold ${fs}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = color;
+        ctx.fillText(`#${cell.seq != null ? cell.seq : i + 1}`, ax, ay);
+        ctx.textAlign = 'start';
+        ctx.textBaseline = 'alphabetic';
+      }
+    });
+
     this.cb.onZoom && this.cb.onZoom(this.k);
+  }
+
+  // 迁移对应点：按标记顺序编号，点间虚线提示顺序
+  drawAnchors(ctx, pts, color) {
+    if (pts.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6 / this.k;
+      ctx.setLineDash([6 / this.k, 5 / this.k]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const r = 8 / this.k;
+    pts.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.lineWidth = 1.5 / this.k;
+      ctx.strokeStyle = '#102027';
+      ctx.stroke();
+      ctx.fillStyle = '#102027';
+      ctx.font = `bold ${11 / this.k}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), p.x, p.y);
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
+    });
   }
 
   drawPolygon(ctx, poly, opt) {

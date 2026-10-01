@@ -6,7 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server/index.js",
-    "test": "node test-geometry.js && node test-fields.js && node test-compare.js"
+    "test": "node test-geometry.js && node test-fields.js && node test-compare.js && node test-transfer.js"
   },
   "engines": {
     "node": ">=20"

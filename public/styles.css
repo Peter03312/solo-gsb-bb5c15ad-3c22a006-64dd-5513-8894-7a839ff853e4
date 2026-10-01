@@ -126,9 +126,31 @@ canvas.panning { cursor: grabbing; }
 }
 .toast.ok { border-color: var(--accent); color: #d7fffb; }
 
+/* 细胞迁移面板 */
+.migrate-select {
+  width: 100%; margin: 6px 0;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px;
+}
+canvas.migrate-source {
+  position: static; inset: auto;          /* 覆盖编辑器大画布的全屏定位 */
+  width: 100%; height: auto;
+  border: 1px solid var(--line); border-radius: 6px;
+  cursor: crosshair; display: block; margin: 4px 0;
+}
+.migrate-summary { font-size: 12.5px; margin-top: 8px; font-weight: 600; }
+.migrate-summary.ok { color: var(--accent); }
+.migrate-summary.err { color: var(--danger); }
+.migrate-row {
+  font-size: 12px; line-height: 1.5;
+  padding: 3px 6px; border-radius: 4px; margin-top: 3px;
+  background: var(--panel2); word-break: break-all;
+}
+.migrate-row.ok { color: var(--accent); }
+.migrate-row.err { color: var(--danger); }
+
 /* 细胞列表 */
-.cell-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-.cell-row {
+.cell-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }.cell-row {
   display: flex; align-items: center; gap: 8px;
   border: 1px solid var(--line); border-radius: 7px;
   padding: 6px 8px; background: var(--panel2);

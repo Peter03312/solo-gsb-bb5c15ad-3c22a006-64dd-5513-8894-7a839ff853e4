@@ -11,6 +11,7 @@ const { initDb } = require('./db');
 const geo = require('./geometry');
 const cmp = require('./compare');
 const fieldsSvc = require('./fields');
+const transfer = require('./transfer');
 const { renderAnnotatedPng } = require('./render');
 const { buildReportCsv, buildCombinedCsv, buildComparisonCsv, buildFieldStatsCsv, streamZip } = require('./exporter');
 
@@ -242,6 +243,109 @@ app.put('/api/images/:id/contours', (req, res) => {
               updated_at = datetime('now') WHERE id = ?`)
     .run(JSON.stringify(next), img.id);
   res.json(getImageOr404(img.id));
+});
+
+// ---------- 细胞迁移（已发布报告 → 另一张图片草稿，三点对应仿射变换） ----------
+// 预览与确认提交共用 transfer.buildMigration：同一变换、同一几何校验；
+// 任一失败整批不写入，目标原有细胞/标尺/视野、来源报告与已发布报告均不改变。
+
+// 解析迁移请求：来源报告 + 两侧对应点 → 迁移计划；失败抛出 {status, message}
+function resolveMigration(img, body) {
+  const reportId = body && body.reportId;
+  if (typeof reportId !== 'string' || !reportId) {
+    throw { status: 400, message: '请选择作为迁移来源的已发布报告（reportId）' };
+  }
+  const report = getReportOr404(reportId);
+  if (!report) throw { status: 404, message: `来源报告不存在（id ${reportId}），请重新选择已发布报告` };
+
+  const plan = transfer.buildMigration(report, img, body && body.sourcePoints, body && body.targetPoints);
+  return { report, plan };
+}
+
+function migrationPayload(img, report, plan) {
+  return {
+    target: { id: img.id, version: img.version, width: img.width, height: img.height },
+    source: {
+      reportId: report.id, title: report.title,
+      width: report.width, height: report.height, cellCount: report.cells.length
+    },
+    transform: plan.transform,
+    sourcePoints: plan.sourcePoints,
+    targetPoints: plan.targetPoints,
+    ok: plan.ok,
+    okCount: plan.okCount,
+    failCount: plan.failCount,
+    cells: plan.cells.map((c) => ({
+      key: c.key, name: c.name, seq: c.seq, label: c.label,
+      ok: c.ok, error: c.error, outer: c.outer, holes: c.holes,
+      // 按目标标尺预算测量值（未定标为 null），与确认迁移后的结果一致
+      areaUm2: img.calib ? geo.measureCell(c.outer, c.holes, img.calib.scale).areaUm2 : null,
+      perimeterUm: img.calib ? geo.measureCell(c.outer, c.holes, img.calib.scale).perimeterUm : null
+    }))
+  };
+}
+
+app.post('/api/images/:id/migrate/preview', (req, res) => {
+  const img = getImageOr404(req.params.id);
+  if (!img) return res.status(404).json({ error: '目标图片草稿不存在，请刷新后重新选择目标' });
+  let ctx;
+  try {
+    ctx = resolveMigration(img, req.body || {});
+  } catch (e) {
+    return res.status(e.status || 400).json({ error: e.message });
+  }
+  res.json(migrationPayload(img, ctx.report, ctx.plan));
+});
+
+app.post('/api/images/:id/migrate', (req, res) => {
+  const body = req.body || {};
+  const img = getImageOr404(req.params.id);
+  if (!img) return res.status(404).json({ error: '目标图片草稿不存在，请刷新后重新选择目标' });
+  // 必须携带预览时读取的目标草稿版本；过期拒绝写入并提示刷新
+  if (!checkVersion(img, body.version)) {
+    return res.status(409).json({
+      error: `目标草稿已过期：你携带的版本为 ${body.version}，当前版本为 ${img.version}，请刷新后重新预览再迁移`,
+      currentVersion: img.version
+    });
+  }
+
+  let ctx;
+  try {
+    ctx = resolveMigration(img, body);
+  } catch (e) {
+    return res.status(e.status || 400).json({ error: e.message });
+  }
+  const { report, plan } = ctx;
+
+  if (!plan.ok) {
+    const first = plan.cells.find((c) => !c.ok);
+    return badRequest(res,
+      `迁移被拒绝：${plan.failCount} 个细胞映射到目标后不满足几何规则（${first.error}），整批未写入`);
+  }
+
+  // 追加到目标现有细胞之后：生成不与现有标识冲突的新 id，保留来源名称
+  const usedIds = new Set(img.cells.map((c) => c.id).filter(Boolean));
+  const appended = plan.cells.map((c) => {
+    let id = crypto.randomUUID();
+    while (usedIds.has(id)) id = crypto.randomUUID();
+    usedIds.add(id);
+    return { id, name: c.name, outer: c.outer, holes: c.holes };
+  });
+  // 按目标标尺重算追加细胞的测量值；目标原有细胞与标尺原样保留
+  const next = img.cells.concat(recompute(appended, img.calib));
+
+  db.prepare(`UPDATE images SET cells = ?, version = version + 1,
+              updated_at = datetime('now') WHERE id = ?`)
+    .run(JSON.stringify(next), img.id);
+
+  const updated = getImageOr404(img.id);
+  res.status(201).json({
+    image: updated,
+    appendedCount: appended.length,
+    appended: appended.map((c, i) => ({ id: c.id, name: c.name, seq: plan.cells[i].seq })),
+    source: { reportId: report.id, title: report.title },
+    transform: plan.transform
+  });
 });
 
 // ---------- 取样视野（整批替换，任一视野非法则整次修改不生效） ----------

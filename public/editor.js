@@ -39,6 +39,7 @@ const Editor = {
   activeFieldId: null,
   view: null,
   tool: 'cell',
+  migrate: null,       // 细胞迁移工作状态（见 resetMigration）
 
   async open(id) {
     this.imageId = id;
@@ -46,12 +47,15 @@ const Editor = {
     document.getElementById('view-editor').classList.remove('hidden');
     const data = await API.getImage(id);
     await this.applyServerData(data);
+    this.resetMigration();
+    this.loadMigrateReports();
 
     if (!this.view) {
       this.view = new CanvasView(document.getElementById('canvas'), {
         onPoint: (pt) => this.addPoint(pt),
         onFinish: () => this.finishRing(),
         onCalibPoint: (pt) => this.addCalibPoint(pt),
+        onMigratePoint: (pt) => this.addMigrateTargetPoint(pt),
         onZoom: (k) => {
           document.getElementById('zoom-indicator').textContent = `${Math.round(k * 100)}%`;
         }
@@ -63,7 +67,9 @@ const Editor = {
         activeCellId: this.activeCellId,
         activeFieldId: this.activeFieldId,
         calib: this.img ? this.img.calib : null,
-        calibDraft: this.calibDraft
+        calibDraft: this.calibDraft,
+        migrationTargetPoints: this.migrate ? this.migrate.targetPoints : [],
+        migrationPreview: this.migrate && this.migrate.preview ? this.migrate.preview.cells : null
       }));
     }
     await this.view.loadImage(`/api/images/${id}/file`, data.width, data.height);
@@ -100,8 +106,9 @@ const Editor = {
 
   setTool(t) {
     this.tool = t;
-    for (const id of ['tool-calib', 'tool-cell', 'tool-hole', 'tool-field', 'tool-fieldhole', 'tool-pan']) {
-      document.getElementById(id).classList.toggle('active', id === `tool-${t}`);
+    for (const id of ['tool-calib', 'tool-cell', 'tool-hole', 'tool-field', 'tool-fieldhole', 'tool-pan', 'tool-migrate']) {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('active', id === `tool-${t}`);
     }
     document.getElementById('tool-hole').disabled = !this.activeCellId;
     document.getElementById('tool-fieldhole').disabled = !this.activeFieldId;
@@ -319,6 +326,270 @@ const Editor = {
       if (e.status === 409) return this.handleConflict(e);
       this.toast(e.message);
     }
+  },
+
+  // ---------- 细胞迁移（已发布报告 → 当前草稿，三点对应仿射变换） ----------
+
+  resetMigration() {
+    this.migrate = {
+      reportId: null,
+      report: null,        // 来源报告（含冻结细胞）
+      sourceImg: null,     // 来源快照 HTMLImageElement
+      sourcePoints: [],    // 来源图上按顺序标记的 3 个对应点
+      targetPoints: [],    // 目标大图上按顺序标记的 3 个对应点
+      preview: null        // 服务端预览结果（含预览时读取的目标草稿版本）
+    };
+    const sel = document.getElementById('migrate-report');
+    if (sel) sel.value = '';
+    const wrap = document.getElementById('migrate-source-wrap');
+    if (wrap) wrap.classList.add('hidden');
+    const res = document.getElementById('migrate-result');
+    if (res) res.innerHTML = '';
+  },
+
+  // 对应点/来源一旦变化，旧预览即失效：确认迁移必须基于最新预览
+  clearMigrationPreview() {
+    if (this.migrate) this.migrate.preview = null;
+  },
+
+  async loadMigrateReports() {
+    const sel = document.getElementById('migrate-report');
+    sel.innerHTML = '';
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = '— 选择来源报告（已发布） —';
+    sel.appendChild(ph);
+    let reports = [];
+    try {
+      reports = await API.listReports();
+    } catch (e) {
+      ph.textContent = `报告列表加载失败：${e.message}`;
+      return;
+    }
+    for (const r of reports) {
+      const opt = document.createElement('option');
+      opt.value = r.id;
+      opt.textContent = `${r.title}（细胞 ${r.cells.length} 个 · ${r.width}×${r.height}px）`;
+      sel.appendChild(opt);
+    }
+    if (this.migrate.reportId) sel.value = this.migrate.reportId;
+  },
+
+  async onMigrateReportChange() {
+    const id = document.getElementById('migrate-report').value;
+    const m = this.migrate;
+    m.reportId = id || null;
+    m.report = null;
+    m.sourceImg = null;
+    m.sourcePoints = [];
+    m.targetPoints = [];
+    this.clearMigrationPreview();
+    document.getElementById('migrate-result').innerHTML = '';
+    if (!id) {
+      document.getElementById('migrate-source-wrap').classList.add('hidden');
+      this.renderMigratePanel();
+      if (this.view) this.view.render();
+      return;
+    }
+    try {
+      m.report = await API.getReport(id);
+    } catch (e) {
+      this.toast(e.message);
+      m.reportId = null;
+      document.getElementById('migrate-report').value = '';
+      document.getElementById('migrate-source-wrap').classList.add('hidden');
+      this.renderMigratePanel();
+      return;
+    }
+    document.getElementById('migrate-source-wrap').classList.remove('hidden');
+    const img = new Image();
+    img.onload = () => { m.sourceImg = img; this.renderMigrateSource(); };
+    img.onerror = () => this.toast('来源报告快照图片加载失败');
+    img.src = `/api/reports/${id}/file`;
+    this.renderMigratePanel();
+    if (this.view) this.view.render();
+  },
+
+  // 来源快照小画布：按报告原始尺寸等比缩放显示，点击换算回原图像素坐标
+  renderMigrateSource() {
+    const m = this.migrate;
+    const cv = document.getElementById('migrate-source-canvas');
+    if (!m || !m.report || !m.sourceImg) return;
+    const cssW = cv.clientWidth || 320;
+    const k = cssW / m.report.width;
+    const cssH = Math.max(1, Math.round(m.report.height * k));
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(cssW * dpr);
+    cv.height = Math.round(cssH * dpr);
+    cv.style.height = `${cssH}px`;
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
+    ctx.drawImage(m.sourceImg, 0, 0, m.report.width, m.report.height);
+    // 已标记的对应点（编号 + 顺序虚线）
+    const pts = m.sourcePoints;
+    if (pts.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.strokeStyle = '#ff9f1c';
+      ctx.lineWidth = 1.6 / k;
+      ctx.setLineDash([6 / k, 5 / k]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    pts.forEach((p, i) => {
+      const r = 8 / k;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fillStyle = '#ff9f1c';
+      ctx.fill();
+      ctx.lineWidth = 1.5 / k;
+      ctx.strokeStyle = '#102027';
+      ctx.stroke();
+      ctx.fillStyle = '#102027';
+      ctx.font = `bold ${11 / k}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i + 1), p.x, p.y);
+    });
+  },
+
+  onMigrateSourceClick(e) {
+    const m = this.migrate;
+    if (!m || !m.report || !m.sourceImg) return;
+    if (m.sourcePoints.length >= 3) {
+      return this.toast('来源对应点已满 3 个；如需重标请点击「清除全部对应点」');
+    }
+    const cv = document.getElementById('migrate-source-canvas');
+    const rect = cv.getBoundingClientRect();
+    const k = rect.width / m.report.width;
+    const x = (e.clientX - rect.left) / k;
+    const y = (e.clientY - rect.top) / k;
+    m.sourcePoints.push({
+      x: Math.min(m.report.width, Math.max(0, Math.round(x * 100) / 100)),
+      y: Math.min(m.report.height, Math.max(0, Math.round(y * 100) / 100))
+    });
+    this.clearMigrationPreview();
+    this.renderMigrateSource();
+    this.renderMigratePanel();
+  },
+
+  addMigrateTargetPoint(pt) {
+    const m = this.migrate;
+    if (!m || !m.reportId) return this.toast('请先在「⑥ 细胞迁移」面板选择来源报告');
+    if (m.targetPoints.length >= 3) {
+      return this.toast('目标对应点已满 3 个；如需重标请点击「清除全部对应点」');
+    }
+    m.targetPoints.push({ x: Math.round(pt.x * 100) / 100, y: Math.round(pt.y * 100) / 100 });
+    this.clearMigrationPreview();
+    this.renderMigratePanel();
+    if (this.view) this.view.render();
+  },
+
+  clearMigratePoints() {
+    const m = this.migrate;
+    if (!m) return;
+    m.sourcePoints = [];
+    m.targetPoints = [];
+    this.clearMigrationPreview();
+    document.getElementById('migrate-result').innerHTML = '';
+    this.renderMigrateSource();
+    this.renderMigratePanel();
+    if (this.view) this.view.render();
+  },
+
+  async previewMigration() {
+    const m = this.migrate;
+    if (!m || !m.reportId) return;
+    try {
+      const resp = await API.previewMigration(this.imageId, {
+        reportId: m.reportId,
+        sourcePoints: m.sourcePoints,
+        targetPoints: m.targetPoints
+      });
+      m.preview = resp;
+      this.toast(
+        resp.ok
+          ? `预览通过：${resp.okCount} 个细胞全部满足几何规则，可确认迁移`
+          : `预览完成：${resp.failCount} 个细胞映射到目标后不满足几何规则，已禁止提交`,
+        resp.ok
+      );
+    } catch (e) {
+      m.preview = null;
+      this.toast(e.message);
+    }
+    this.renderMigratePanel();
+    if (this.view) this.view.render();
+  },
+
+  async confirmMigration() {
+    const m = this.migrate;
+    if (!m || !m.preview || !m.preview.ok) return;
+    if (this.dirty || this.fieldsDirty) {
+      return this.toast('有未保存的轮廓/视野修改：请先保存（保存会使预览版本过期，需重新预览）再确认迁移');
+    }
+    try {
+      const resp = await API.confirmMigration(this.imageId, {
+        // 确认迁移必须携带预览时读取的目标草稿版本
+        version: m.preview.target.version,
+        reportId: m.reportId,
+        sourcePoints: m.sourcePoints,
+        targetPoints: m.targetPoints
+      });
+      await this.applyServerData(resp.image);
+      this.resetMigration();
+      this.loadMigrateReports();
+      this.renderSidebar();
+      this.toast(`迁移完成：已追加 ${resp.appendedCount} 个细胞（保留名称、按当前标尺重算测量与视野统计），草稿版本 v${resp.image.version}`, true);
+    } catch (e) {
+      if (e.status === 409) {
+        // 版本过期：拒绝写入，提示刷新——拉取最新草稿并要求重新预览
+        this.toast(e.message);
+        try {
+          const fresh = await API.getImage(this.imageId);
+          await this.applyServerData(fresh);
+        } catch (_) { /* ignore */ }
+        this.resetMigration();
+        this.renderSidebar();
+      } else {
+        this.toast(e.message);
+        this.clearMigrationPreview();
+        this.renderMigratePanel();
+        if (this.view) this.view.render();
+      }
+    }
+  },
+
+  renderMigratePanel() {
+    const m = this.migrate;
+    if (!m) return;
+    const fmtPts = (pts) => pts.length
+      ? pts.map((p, i) => `P${i + 1}(${p.x.toFixed(1)}, ${p.y.toFixed(1)})`).join('　')
+      : '尚未标记';
+    document.getElementById('migrate-source-points').innerHTML =
+      `<b>来源对应点 ${m.sourcePoints.length}/3</b>：${fmtPts(m.sourcePoints)}`;
+    document.getElementById('migrate-target-points').innerHTML =
+      `<b>目标对应点 ${m.targetPoints.length}/3</b>：${fmtPts(m.targetPoints)}`;
+
+    const ready = !!m.reportId && m.sourcePoints.length === 3 && m.targetPoints.length === 3;
+    document.getElementById('migrate-preview').disabled = !ready;
+    document.getElementById('migrate-confirm').disabled =
+      !(m.preview && m.preview.ok) || this.dirty || this.fieldsDirty;
+
+    const res = document.getElementById('migrate-result');
+    if (!m.preview) {
+      if (!res.innerHTML) res.innerHTML = '';
+      return;
+    }
+    const p = m.preview;
+    const rows = p.cells.map((c) =>
+      `<div class="migrate-row ${c.ok ? 'ok' : 'err'}">${c.ok ? '✓' : '✗'} ${c.label}` +
+      `${c.ok && c.areaUm2 != null ? `（净面积 ${fmt(c.areaUm2)} μm²，周长 ${fmt(c.perimeterUm)} μm）` : ''}` +
+      `${c.ok ? '' : `：${c.error}`}</div>`).join('');
+    res.innerHTML =
+      `<div class="migrate-summary ${p.ok ? 'ok' : 'err'}">` +
+      `${p.ok ? `全部 ${p.okCount} 个细胞通过校验（预览时目标草稿版本 v${p.target.version}），可确认迁移`
+             : `${p.failCount} 个细胞映射后不满足几何规则，已禁止提交`}</div>` + rows;
   },
 
   async handleConflict(e) {
@@ -603,6 +874,7 @@ const Editor = {
     document.getElementById('save-fields').disabled = !this.fieldsDirty;
     document.getElementById('tool-hole').disabled = !this.activeCellId;
     document.getElementById('tool-fieldhole').disabled = !this.activeFieldId;
+    this.renderMigratePanel();
     this.renderDraftInfo();
   },
 
@@ -648,6 +920,14 @@ const Editor = {
     document.getElementById('save-contours').onclick = () => this.saveAll();
     document.getElementById('save-fields').onclick = () => this.saveFields();
     document.getElementById('publish-btn').onclick = () => this.publish();
+
+    // 细胞迁移
+    document.getElementById('migrate-report').onchange = () => this.onMigrateReportChange();
+    document.getElementById('migrate-source-canvas').onclick = (e) => this.onMigrateSourceClick(e);
+    document.getElementById('tool-migrate').onclick = () => this.setTool('migrate');
+    document.getElementById('migrate-reset').onclick = () => this.clearMigratePoints();
+    document.getElementById('migrate-preview').onclick = () => this.previewMigration();
+    document.getElementById('migrate-confirm').onclick = () => this.confirmMigration();
   }
 };
 

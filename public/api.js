@@ -45,6 +45,21 @@ const API = {
       body: JSON.stringify({ version, fields })
     }));
   },
+  // 细胞迁移：预览（同一变换与校验，不写入）与确认（携带预览时读取的目标草稿版本）
+  async previewMigration(id, payload) {
+    return jsonOrThrow(await fetch(`/api/images/${id}/migrate/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }));
+  },
+  async confirmMigration(id, payload) {
+    return jsonOrThrow(await fetch(`/api/images/${id}/migrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    }));
+  },
   async publish(id, version, title) {
     return jsonOrThrow(await fetch(`/api/images/${id}/publish`, {
       method: 'POST',

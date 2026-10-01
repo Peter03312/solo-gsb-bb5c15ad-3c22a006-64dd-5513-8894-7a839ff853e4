@@ -96,7 +96,32 @@
         </div>
 
         <div class="panel">
-          <h3>⑥ 发布报告</h3>
+          <h3>⑥ 细胞迁移（从已发布报告）</h3>
+          <p class="hint">把一份<b>已发布报告</b>的全部细胞按仿射变换迁移到当前草稿：
+            选择来源报告后，在来源快照与右侧大图上按<b>相同顺序</b>各标记 3 个<b>不共线</b>对应点，
+            预览逐个校验全部通过后才能确认迁移。迁移只把细胞<b>追加</b>到当前草稿
+            （保留名称、按当前标尺重算测量与视野统计），来源报告与已发布内容不受影响。</p>
+          <select id="migrate-report" class="migrate-select"></select>
+          <div id="migrate-source-wrap" class="hidden">
+            <p class="hint">① 在来源报告快照上依次点 3 个对应点：</p>
+            <canvas id="migrate-source-canvas" class="migrate-source"></canvas>
+            <div id="migrate-source-points" class="info"></div>
+            <p class="hint">② 在右侧当前草稿大图上依次点 3 个对应点：</p>
+            <div class="toolbar wrap">
+              <button id="tool-migrate" class="tool">🎯 标目标点工具</button>
+              <button id="migrate-reset" class="tool small">清除全部对应点</button>
+            </div>
+            <div id="migrate-target-points" class="info"></div>
+            <div class="toolbar wrap">
+              <button id="migrate-preview" class="primary small" disabled>预览迁移</button>
+              <button id="migrate-confirm" class="primary small" disabled>确认迁移</button>
+            </div>
+          </div>
+          <div id="migrate-result"></div>
+        </div>
+
+        <div class="panel">
+          <h3>⑦ 发布报告</h3>
           <p class="hint">发布会冻结当时的图片、标尺、细胞轮廓、<b>取样视野与密度统计</b>；之后修改草稿不影响已发布报告。</p>
           <button id="publish-btn" class="primary wide">发布当前草稿为报告</button>
         </div>
